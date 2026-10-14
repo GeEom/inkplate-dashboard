@@ -1,5 +1,5 @@
-//! The firmware's `http` and `png` against a local server and fixtures, run by
-//! `scripts/host_tls_test.sh`.
+//! The firmware's `http`, `png` and `roots` against real servers and fixtures,
+//! run by `scripts/host_tls_test.sh`.
 
 extern crate alloc;
 
@@ -7,9 +7,14 @@ extern crate alloc;
 mod http;
 #[path = "../../src/png.rs"]
 mod png;
+#[path = "../../src/roots.rs"]
+mod roots;
 
 use core::fmt::Debug;
-use http::{Etag, FetchError, FetchOutcome, IntoFetchError, Request, Response};
+use http::{
+    ChainCache, Etag, FetchError, FetchOutcome, IntoFetchError, Request, Response, TlsBufs,
+    TlsVerify,
+};
 use sha2::{Digest as _, Sha256};
 use std::net::TcpStream;
 use std::process::ExitCode;
@@ -91,16 +96,37 @@ fn expected_body(size: usize) -> Vec<u8> {
         .collect()
 }
 
-/// A GET against the local test server.
+/// Port 443 is the live web, anything else a local test server.
 struct Get<'a> {
+    host: &'a str,
     port: u16,
     path: &'a str,
     bearer: Option<&'a str>,
+    verify: Option<TlsVerify<'a>>,
 }
 
-impl Get<'_> {
+impl<'a> Get<'a> {
+    const fn web(
+        host: &'a str,
+        path: &'a str,
+        bearer: Option<&'a str>,
+        verify: TlsVerify<'a>,
+    ) -> Self {
+        Self {
+            host,
+            port: 443,
+            path,
+            bearer,
+            verify: Some(verify),
+        }
+    }
+
     fn run(self, body: &mut [u8], etag: &mut Etag) -> Outcome {
-        let host_header = format!("{NAME}:{}", self.port);
+        let (host_header, connect_host, timeout) = if self.port == 443 {
+            (self.host.to_owned(), self.host, 80)
+        } else {
+            (format!("{NAME}:{}", self.port), "127.0.0.1", 15)
+        };
         let sent_etag = core::str::from_utf8(etag.get())
             .ok()
             .filter(|e| !e.is_empty());
@@ -110,9 +136,30 @@ impl Get<'_> {
             sent: &mut || {},
         };
         let response = Response { body, etag };
-        let mut io = connect("127.0.0.1", self.port, Duration::from_secs(15))?;
-        http::exchange(&mut io, request, response)
+        let mut io = connect(connect_host, self.port, Duration::from_secs(timeout))?;
+        match self.verify {
+            None => http::exchange(&mut io, request, response),
+            Some(verify) => {
+                let bufs = TlsBufs {
+                    read: &mut vec![0; http::TLS_READ],
+                    write: &mut vec![0; http::TLS_WRITE],
+                };
+                http::tls_exchange(io, bufs, rand_core::OsRng, verify, request, response)
+            }
+        }
     }
+}
+
+const fn pinned<'a>(
+    roots: &'a [&'a [u8]],
+    name: &'a str,
+    cache: &'a mut ChainCache,
+) -> TlsVerify<'a> {
+    TlsVerify { roots, name, cache }
+}
+
+const fn store<'a>(name: &'a str, cache: &'a mut ChainCache) -> TlsVerify<'a> {
+    pinned(roots::ROOTS, name, cache)
 }
 
 fn is(want: Outcome) -> impl FnOnce(&Outcome) -> bool {
@@ -135,7 +182,10 @@ impl Report {
 }
 
 struct Local {
+    good: u16,
+    evil: u16,
     plain: u16,
+    ca: Vec<u8>,
     size: usize,
     token: String,
     want: Vec<u8>,
@@ -145,18 +195,31 @@ impl Local {
     /// The plain-http server, with the right token.
     fn plain<'a>(&'a self, path: &'a str) -> Get<'a> {
         Get {
+            host: NAME,
             port: self.plain,
             path,
             bearer: Some(&self.token),
+            verify: None,
+        }
+    }
+
+    fn tls<'a>(&'a self, port: u16, path: &'a str, verify: TlsVerify<'a>) -> Get<'a> {
+        Get {
+            port,
+            verify: Some(verify),
+            ..self.plain(path)
         }
     }
 }
 
 fn local_protocol(cfg: &Local, report: &mut Report) {
-    let path = "/frame";
+    let roots: [&[u8]; 1] = [&cfg.ca];
+    let (path, held) = ("/frame", "/frame?wait=2");
     let fetched = Ok(FetchOutcome::Fetched(cfg.size));
     let mut body = vec![0; cfg.size];
     let mut etag = Etag::new();
+    let mut tls_etag = Etag::new();
+    let mut cache = ChainCache::new();
     report.check(
         "plain http 200 + body",
         cfg.plain(path).run(&mut body, &mut etag),
@@ -166,6 +229,49 @@ fn local_protocol(cfg: &Local, report: &mut Report) {
         "plain http 304 on match",
         cfg.plain(path).run(&mut body, &mut etag),
         is(Ok(FetchOutcome::NotModified)),
+    );
+    body.fill(0);
+    report.check(
+        "tls pinned-ca 200 + body",
+        cfg.tls(cfg.good, path, pinned(&roots, NAME, &mut cache))
+            .run(&mut body, &mut tls_etag),
+        |r| *r == fetched && body == cfg.want,
+    );
+    report.check(
+        "tls 304 on match",
+        cfg.tls(cfg.good, path, pinned(&roots, NAME, &mut cache))
+            .run(&mut body, &mut tls_etag),
+        is(Ok(FetchOutcome::NotModified)),
+    );
+    let t0 = Instant::now();
+    report.check(
+        "tls long-poll hold then 304",
+        cfg.tls(cfg.good, held, pinned(&roots, NAME, &mut cache))
+            .run(&mut body, &mut tls_etag),
+        |r| *r == Ok(FetchOutcome::NotModified) && t0.elapsed() >= Duration::from_millis(1800),
+    );
+    report.check(
+        "tls rejects swapped cert (MITM)",
+        cfg.tls(cfg.evil, path, pinned(&roots, NAME, &mut ChainCache::new()))
+            .run(&mut body, &mut Etag::new()),
+        is(Err(FetchError::Tls)),
+    );
+    report.check(
+        "tls rejects wrong name",
+        cfg.tls(
+            cfg.good,
+            path,
+            pinned(&roots, "wrong-name", &mut ChainCache::new()),
+        )
+        .run(&mut body, &mut Etag::new()),
+        is(Err(FetchError::Tls)),
+    );
+    let mut refused = cfg.tls(cfg.good, path, pinned(&roots, NAME, &mut cache));
+    refused.bearer = Some("nope");
+    report.check(
+        "tls 403 -> HttpStatus(403)",
+        refused.run(&mut body, &mut Etag::new()),
+        is(Err(FetchError::HttpStatus(403))),
     );
 }
 
@@ -227,6 +333,125 @@ fn local_framing(cfg: &Local, report: &mut Report) {
     );
 }
 
+fn local_chain_memo(cfg: &Local, report: &mut Report) {
+    let roots: [&[u8]; 1] = [&cfg.ca];
+    let all: Vec<&[u8]> = roots::ROOTS.iter().copied().chain(roots).collect();
+    let mut body = vec![0; cfg.size];
+    let mut fetch = |port, name, store: &[&[u8]], cache: &mut ChainCache| {
+        let r = cfg
+            .tls(port, "/frame", pinned(store, name, cache))
+            .run(&mut body, &mut Etag::new());
+        (r, cache.last_hit, cache.last_attempts)
+    };
+    let mut warm = ChainCache::new();
+    report.check(
+        "memo: cold handshake verifies (1 candidate)",
+        fetch(cfg.good, NAME, &roots, &mut warm),
+        |&(r, hit, attempts)| r.is_ok() && !hit && attempts == 1,
+    );
+    report.check(
+        "memo: same chain again skips path-building",
+        fetch(cfg.good, NAME, &roots, &mut warm),
+        |&(r, hit, attempts)| r.is_ok() && hit && attempts == 0,
+    );
+    report.check(
+        "memo: MITM chain under warm memo refused",
+        fetch(cfg.evil, NAME, &roots, &mut warm),
+        |&(r, hit, _)| r == Err(FetchError::Tls) && !hit,
+    );
+    let mut renamed = ChainCache::new();
+    let warmed = fetch(cfg.good, NAME, &roots, &mut renamed).0;
+    report.check(
+        "memo: same chain, wrong name refused",
+        fetch(cfg.good, "wrong-name", &roots, &mut renamed),
+        |&(r, hit, _)| warmed.is_ok() && r == Err(FetchError::Tls) && !hit,
+    );
+    report.check(
+        "issuer pre-check: foreign roots skipped",
+        fetch(cfg.good, NAME, &all, &mut ChainCache::new()),
+        |&(r, _, attempts)| r.is_ok() && attempts == 1,
+    );
+}
+
+/// Makespace on Fly.io: Let's Encrypt Generation Y, all P-384 above the leaf.
+fn live_makespace(report: &mut Report, foreign: &[&[u8]]) {
+    let (Ok(host), Ok(path), Some(token)) = (
+        std::env::var("MS_HOST"),
+        std::env::var("MS_PATH"),
+        std::env::var("MS_TOKEN").ok().filter(|t| !t.is_empty()),
+    ) else {
+        println!("SKIP  makespace scenarios (set MS_HOST/MS_PATH/MS_TOKEN)");
+        return;
+    };
+    let bearer = Some(token.as_str());
+    let unknown = "/equipment/no-such-machine-xyz/trouble-tickets.png?width=1280&height=720";
+    let x2: [&[u8]; 1] = [include_bytes!("../../src/roots/isrg_root_x2.der")];
+    let mut body = vec![0; 256 * 1024];
+    let mut scratch = vec![0; png::raw_len(PANEL.0, PANEL.1, 8)];
+    let mut fb = vec![0; PANEL.0 / 8 * PANEL.1];
+    let mut cache = ChainCache::new();
+    let mut x2_cache = ChainCache::new();
+    let mut etag = Etag::new();
+
+    let first = Get::web(&host, &path, bearer, store(&host, &mut cache)).run(&mut body, &mut etag);
+    let decoded = match first {
+        Ok(FetchOutcome::Fetched(n)) => body
+            .get(..n)
+            .ok_or(png::PngError::Truncated)
+            .and_then(|png| png::decode(png, PANEL.0, PANEL.1, &mut scratch))
+            .and_then(|image| image.to_1bpp(&mut fb)),
+        _ => Err(png::PngError::Truncated),
+    };
+    report.check(
+        "makespace: 200 + PNG decodes 1280x720, 1 chain candidate",
+        (first, decoded, cache.last_attempts),
+        |&(_, decoded, attempts)| decoded.is_ok() && attempts == 1,
+    );
+    report.check(
+        "makespace: 304 on match, chain memo hit",
+        Get::web(&host, &path, bearer, store(&host, &mut cache)).run(&mut body, &mut etag),
+        |r| *r == Ok(FetchOutcome::NotModified) && cache.last_hit,
+    );
+    report.check(
+        "makespace: X2-only store verifies via cross-sign",
+        Get::web(&host, &path, bearer, pinned(&x2, &host, &mut x2_cache))
+            .run(&mut body, &mut Etag::new()),
+        |r| matches!(r, Ok(FetchOutcome::Fetched(_))) && x2_cache.last_attempts == 1,
+    );
+    report.check(
+        "makespace: rejects wrong hostname",
+        Get::web(
+            &host,
+            &path,
+            bearer,
+            store("makespace.invalid", &mut ChainCache::new()),
+        )
+        .run(&mut body, &mut Etag::new()),
+        is(Err(FetchError::Tls)),
+    );
+    report.check(
+        "makespace: rejects foreign root store",
+        Get::web(
+            &host,
+            &path,
+            bearer,
+            pinned(foreign, &host, &mut ChainCache::new()),
+        )
+        .run(&mut body, &mut Etag::new()),
+        is(Err(FetchError::Tls)),
+    );
+    report.check(
+        "makespace: unknown machine -> HttpStatus(404)",
+        Get::web(&host, unknown, bearer, store(&host, &mut cache)).run(&mut body, &mut Etag::new()),
+        is(Err(FetchError::HttpStatus(404))),
+    );
+    report.check(
+        "makespace: no token -> HttpStatus(401)",
+        Get::web(&host, &path, None, store(&host, &mut cache)).run(&mut body, &mut Etag::new()),
+        is(Err(FetchError::HttpStatus(401))),
+    );
+}
+
 /// Each manifest line: `<png> <w> <h> ok:<1bpp>:<levels>` or `err:<variant>`.
 fn png_fixtures(dir: &str, report: &mut Report) -> Result<(), String> {
     let read =
@@ -268,19 +493,24 @@ fn png_fixtures(dir: &str, report: &mut Report) -> Result<(), String> {
 }
 
 fn local(args: &[String], report: &mut Report) -> Result<(), String> {
-    let [plain, size, token] = args else {
-        return Err("usage: <plain> <size> <token>".into());
+    let [good, evil, plain, ca, size, token] = args else {
+        return Err("usage: <good> <evil> <plain> <ca.der> <size> <token>".into());
     };
     let port = |p: &str| p.parse::<u16>().map_err(|e| format!("port {p}: {e}"));
     let body_size = size.parse().map_err(|e| format!("size: {e}"))?;
     let cfg = Local {
+        good: port(good)?,
+        evil: port(evil)?,
         plain: port(plain)?,
+        ca: std::fs::read(ca).map_err(|e| format!("{ca}: {e}"))?,
         size: body_size,
         token: token.clone(),
         want: expected_body(body_size),
     };
     local_protocol(&cfg, report);
     local_framing(&cfg, report);
+    local_chain_memo(&cfg, report);
+    live_makespace(report, &[&cfg.ca]);
     Ok(())
 }
 

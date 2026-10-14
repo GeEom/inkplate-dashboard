@@ -1,7 +1,16 @@
-//! Conditional GET over `embedded_io`; shared with the host harness, so no esp-hal.
+//! Conditional GET over `embedded_io`, optionally in TLS 1.3; shared with the
+//! host harness, so no esp-hal.
 #![forbid(unsafe_code)]
 
 use embedded_io::{Read, Write};
+use embedded_tls::blocking::{
+    Aes128GcmSha256, NoClock, TlsCipherSuite, TlsConfig, TlsConnection, TlsContext,
+};
+use embedded_tls::pki::CertVerifier;
+use embedded_tls::{
+    Certificate, CertificateEntryRef, CertificateRef, CertificateVerifyRef, CryptoProvider,
+    CryptoRngCore, SignatureScheme, TlsError, TlsVerifier,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchError {
@@ -13,6 +22,7 @@ pub enum FetchError {
     Unsupported,
     TooLarge,
     TooShort,
+    Tls,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +33,16 @@ pub enum FetchOutcome {
 
 pub trait IntoFetchError {
     fn into_fetch(self) -> FetchError;
+}
+
+impl IntoFetchError for TlsError {
+    fn into_fetch(self) -> FetchError {
+        match self {
+            Self::Io(embedded_io::ErrorKind::TimedOut) => FetchError::Timeout,
+            Self::Io(_) => FetchError::ConnectFail,
+            _ => FetchError::Tls,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -60,6 +80,15 @@ impl<const N: usize> Default for Inline<N> {
 
 /// Quotes included.
 pub type Etag = Inline<64>;
+
+pub struct TlsBufs<'a> {
+    pub read: &'a mut [u8],
+    pub write: &'a mut [u8],
+}
+
+/// A full 16KB record, with header and tag.
+pub const TLS_READ: usize = 16640;
+pub const TLS_WRITE: usize = 4096;
 
 pub struct Request<'a> {
     pub head: &'a [u8],
@@ -204,4 +233,277 @@ fn header_value<'h>(head: &'h [u8], name: &[u8]) -> Option<&'h [u8]> {
         let value = rest.strip_prefix(b":")?;
         key.eq_ignore_ascii_case(name).then(|| value.trim_ascii())
     })
+}
+
+/// `cache` lives across fetches.
+pub struct TlsVerify<'a> {
+    pub roots: &'a [&'a [u8]],
+    pub name: &'a str,
+    pub cache: &'a mut ChainCache,
+}
+
+const CERT_BUF: usize = 4096;
+const LEAF_BUF: usize = 2048;
+
+/// SHA-256 of (name, roots, served DERs) of the last verified chain: with no
+/// clock, a match can skip path-building.
+pub struct ChainCache {
+    digest: Option<[u8; 32]>,
+    pub last_hit: bool,
+    /// Candidates that ran signature math.
+    pub last_attempts: u8,
+}
+
+impl ChainCache {
+    pub const fn new() -> Self {
+        Self {
+            digest: None,
+            last_hit: false,
+            last_attempts: 0,
+        }
+    }
+}
+
+impl Default for ChainCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+type Hash = <Aes128GcmSha256 as TlsCipherSuite>::Hash;
+
+struct MultiRootVerifier<'a> {
+    roots: &'a [&'a [u8]],
+    name: &'a str,
+    cache: &'a mut ChainCache,
+    leaf: Inline<LEAF_BUF>,
+    transcript: Option<Hash>,
+}
+
+impl MultiRootVerifier<'_> {
+    fn chain_digest(&self, cert: &CertificateRef<'_>) -> Option<[u8; 32]> {
+        use sha2::Digest as _;
+        let mut h = sha2::Sha256::new();
+        let mut field = |bytes: &[u8]| {
+            h.update(u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_be_bytes());
+            h.update(bytes);
+        };
+        field(b"inkplate-chain-v1");
+        field(self.name.as_bytes());
+        self.roots.iter().for_each(|root| field(root));
+        field(b"served");
+        for entry in &cert.entries {
+            match entry {
+                CertificateEntryRef::X509(der) => field(der),
+                CertificateEntryRef::RawPublicKey(_) => return None,
+            }
+        }
+        Some(h.finalize().into())
+    }
+
+    /// Each root against each truncation (cross-signed tails) whose top names
+    /// it as issuer.
+    fn verify_path(
+        &mut self,
+        transcript: &Hash,
+        cert: &CertificateRef<'_>,
+    ) -> Result<(), TlsError> {
+        for root in self.roots {
+            let Ok((_, root_subject)) = issuer_subject(root) else {
+                continue;
+            };
+            for keep in (1..=cert.entries.len()).rev() {
+                let Some(entries) = cert.entries.get(..keep) else {
+                    continue;
+                };
+                let issued_by_root = matches!(
+                    entries.last(),
+                    Some(CertificateEntryRef::X509(top))
+                        if issuer_subject(top).is_ok_and(|(issuer, _)| issuer == root_subject)
+                );
+                if !issued_by_root {
+                    continue;
+                }
+                self.cache.last_attempts = self.cache.last_attempts.saturating_add(1);
+                let mut candidate = CertificateRef::with_context(&[]);
+                for entry in entries {
+                    candidate.add(match entry {
+                        CertificateEntryRef::X509(der) => CertificateEntryRef::X509(der),
+                        CertificateEntryRef::RawPublicKey(key) => {
+                            CertificateEntryRef::RawPublicKey(key)
+                        }
+                    })?;
+                }
+                let mut verifier: CertVerifier<'_, Aes128GcmSha256, NoClock, CERT_BUF> =
+                    CertVerifier::new(Certificate::X509(root));
+                verifier.set_hostname_verification(self.name)?;
+                if verifier.verify_certificate(transcript, candidate).is_ok() {
+                    return Ok(());
+                }
+            }
+        }
+        Err(TlsError::InvalidCertificate)
+    }
+}
+
+fn decode_error<E>(_: E) -> TlsError {
+    TlsError::DecodeError
+}
+
+/// Past the optional `[0]` version.
+fn tbs_reader(cert_der: &[u8]) -> Result<der::SliceReader<'_>, TlsError> {
+    use der::{Decode as _, Reader as _};
+    let mut r = der::SliceReader::new(cert_der).map_err(decode_error)?;
+    der::Header::decode(&mut r).map_err(decode_error)?;
+    der::Header::decode(&mut r).map_err(decode_error)?;
+    let peeked = der::Header::peek(&r).map_err(decode_error)?;
+    if matches!(peeked.tag(), der::Tag::ContextSpecific { .. }) {
+        r.tlv_bytes().map_err(decode_error)?;
+    }
+    Ok(r)
+}
+
+/// Raw DER: a CA spelling its name two ways fails closed.
+fn issuer_subject(cert_der: &[u8]) -> Result<(&[u8], &[u8]), TlsError> {
+    use der::Reader as _;
+    let mut r = tbs_reader(cert_der)?;
+    let mut next = || r.tlv_bytes().map_err(decode_error);
+    let [_serial, _signature, issuer, _validity, subject] =
+        [next()?, next()?, next()?, next()?, next()?];
+    Ok((issuer, subject))
+}
+
+fn spki_point(cert_der: &[u8]) -> Result<&[u8], TlsError> {
+    use der::{Decode as _, Reader as _};
+    let mut r = tbs_reader(cert_der)?;
+    for _ in 0..5 {
+        r.tlv_bytes().map_err(decode_error)?;
+    }
+    der::Header::decode(&mut r).map_err(decode_error)?;
+    r.tlv_bytes().map_err(decode_error)?;
+    let key = der::asn1::BitStringRef::decode(&mut r).map_err(decode_error)?;
+    key.as_bytes().ok_or(TlsError::DecodeError)
+}
+
+const VERIFY_CONTEXT: &[u8] = b"TLS 1.3, server CertificateVerify\x00";
+
+impl TlsVerifier<Aes128GcmSha256> for MultiRootVerifier<'_> {
+    /// Checked against `name`.
+    fn set_hostname_verification(&mut self, _: &str) -> Result<(), TlsError> {
+        Ok(())
+    }
+
+    fn verify_certificate(
+        &mut self,
+        transcript: &Hash,
+        cert: CertificateRef<'_>,
+    ) -> Result<(), TlsError> {
+        let digest = self.chain_digest(&cert);
+        self.cache.last_attempts = 0;
+        self.cache.last_hit = digest.is_some() && digest == self.cache.digest;
+        if !self.cache.last_hit {
+            self.verify_path(transcript, &cert)?;
+            self.cache.digest = digest;
+        }
+        // The record buffer is reused before `CertificateVerify`.
+        let Some(CertificateEntryRef::X509(leaf)) = cert.entries.first() else {
+            return Err(TlsError::DecodeError);
+        };
+        self.leaf.set(leaf);
+        if self.leaf.get().len() != leaf.len() {
+            return Err(TlsError::InsufficientSpace);
+        }
+        self.transcript = Some(transcript.clone());
+        Ok(())
+    }
+
+    /// RFC 8446 §4.4.3: a replayed public chain is refused.
+    fn verify_signature(&mut self, verify: CertificateVerifyRef<'_>) -> Result<(), TlsError> {
+        use sha2::Digest as _;
+        let hash = self
+            .transcript
+            .take()
+            .ok_or(TlsError::InvalidCertificate)?
+            .finalize();
+        let mut msg = [b' '; 64 + 34 + 32];
+        for (dst, src) in msg
+            .iter_mut()
+            .skip(64)
+            .zip(VERIFY_CONTEXT.iter().chain(&hash))
+        {
+            *dst = *src;
+        }
+        let point = spki_point(self.leaf.get())?;
+        let ok = match verify.signature_scheme {
+            SignatureScheme::EcdsaSecp256r1Sha256 => {
+                use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
+                let key = VerifyingKey::from_sec1_bytes(point).map_err(decode_error)?;
+                let sig = Signature::from_der(verify.signature).map_err(decode_error)?;
+                key.verify(&msg, &sig).is_ok()
+            }
+            SignatureScheme::EcdsaSecp384r1Sha384 => {
+                use p384::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
+                let key = VerifyingKey::from_sec1_bytes(point).map_err(decode_error)?;
+                let sig = Signature::from_der(verify.signature).map_err(decode_error)?;
+                key.verify(&msg, &sig).is_ok()
+            }
+            _ => return Err(TlsError::InvalidSignatureScheme),
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(TlsError::InvalidSignature)
+        }
+    }
+}
+
+struct RootsProvider<'v, RNG> {
+    rng: RNG,
+    verifier: MultiRootVerifier<'v>,
+}
+
+impl<RNG: CryptoRngCore> CryptoProvider for RootsProvider<'_, RNG> {
+    type CipherSuite = Aes128GcmSha256;
+    type Signature = &'static [u8];
+
+    fn rng(&mut self) -> impl CryptoRngCore {
+        &mut self.rng
+    }
+
+    fn verifier(&mut self) -> Result<&mut impl TlsVerifier<Self::CipherSuite>, TlsError> {
+        Ok(&mut self.verifier)
+    }
+}
+
+pub fn tls_exchange<T>(
+    io: T,
+    TlsBufs { read, write }: TlsBufs<'_>,
+    rng: impl CryptoRngCore,
+    TlsVerify { roots, name, cache }: TlsVerify<'_>,
+    request: Request<'_>,
+    response: Response<'_>,
+) -> Result<FetchOutcome, FetchError>
+where
+    T: Read + Write,
+    T::Error: embedded_io::Error,
+{
+    let mut tls: TlsConnection<'_, T, Aes128GcmSha256> = TlsConnection::new(io, read, write);
+    let opened = tls.open(TlsContext::new(
+        &TlsConfig::new().with_server_name(name),
+        RootsProvider {
+            rng,
+            verifier: MultiRootVerifier {
+                roots,
+                name,
+                cache,
+                leaf: Inline::new(),
+                transcript: None,
+            },
+        },
+    ));
+    let result = opened
+        .map_err(IntoFetchError::into_fetch)
+        .and_then(|()| exchange(&mut tls, request, response));
+    tls.close().ok();
+    result
 }

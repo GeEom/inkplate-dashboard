@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""HTTP test server for the host harness (host/, scripts/host_tls_test.sh).
+"""HTTP(S) test server for the host harness (host/, scripts/host_tls_test.sh).
 
 Serves /frame: a deterministic body with ETag + If-None-Match => 304, a
 `wait=N` long-poll hold, a required `Authorization: Bearer` token, and
-framing variants for the client's body handling.
+framing variants for the client's body handling. With --cert/--key it
+speaks TLS 1.3 (OpenSSL via python ssl); without, plain HTTP.
 """
 import argparse
 import hashlib
+import ssl
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -87,6 +89,8 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, required=True)
+    ap.add_argument("--cert", help="PEM chain, leaf first; with --key enables TLS 1.3")
+    ap.add_argument("--key")
     ap.add_argument("--size", type=int, required=True, help="body bytes")
     ap.add_argument("--token", required=True, help="required bearer token")
     args = ap.parse_args()
@@ -95,7 +99,16 @@ def main():
     httpd.body_size = args.size
     httpd.token = args.token
 
-    print(f"[server:{args.port}] http, {args.size}B body", file=sys.stderr)
+    if args.cert:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+        ctx.load_cert_chain(args.cert, args.key or args.cert)
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        mode = "https (TLS 1.3)"
+    else:
+        mode = "http"
+
+    print(f"[server:{args.port}] {mode}, {args.size}B body", file=sys.stderr)
     httpd.serve_forever()
 
 
