@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 WORK=$(mktemp -d /tmp/inkplate-tls-test.XXXXXX)
-GOOD_PORT=47331 EVIL_PORT=47332 PLAIN_PORT=47334
+GOOD_PORT=47331 EVIL_PORT=47332 FORGED_PORT=47333 PLAIN_PORT=47334
 SIZE=100000 TOKEN=testtok
 PIDS=()
 
@@ -30,12 +30,13 @@ echo "[*] Minting test PKIs (good + evil twin, same names)"
 ./scripts/gen_tls_cert.sh inkplate-test "$WORK/good"
 ./scripts/gen_tls_cert.sh inkplate-test "$WORK/evil"
 
-echo "[*] Starting servers (https good:$GOOD_PORT, evil:$EVIL_PORT, http:$PLAIN_PORT)"
+echo "[*] Starting servers (https good:$GOOD_PORT, evil:$EVIL_PORT, forged:$FORGED_PORT, http:$PLAIN_PORT)"
 serve --port "$GOOD_PORT" --cert "$WORK/good/server.pem" --key "$WORK/good/server.key.pem"
 serve --port "$EVIL_PORT" --cert "$WORK/evil/server.pem" --key "$WORK/evil/server.key.pem"
+serve --port "$FORGED_PORT" --cert "$WORK/good/forged.pem" --key "$WORK/good/forged.key.pem"
 serve --port "$PLAIN_PORT"
 
-for port in $GOOD_PORT $EVIL_PORT $PLAIN_PORT; do
+for port in $GOOD_PORT $EVIL_PORT $FORGED_PORT $PLAIN_PORT; do
     for _ in $(seq 1 50); do
         if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then exec 3>&-; break; fi
         sleep 0.1
@@ -50,7 +51,7 @@ MS_PATH=${MS_PATH-/equipment/wood-shop-band-saw/trouble-tickets.png?width=1280&h
 MS_TOKEN=${MS_TOKEN-$(grep "^TEST_MAKESPACE_TOKEN=" wifi.env 2>/dev/null | cut -d= -f2- || true)}
 if [ -n "$MS_HOST" ] && [ -n "$MS_TOKEN" ]; then export MS_HOST MS_PATH MS_TOKEN; fi
 (cd host && cargo run --release --quiet -- \
-    "$GOOD_PORT" "$EVIL_PORT" "$PLAIN_PORT" "$WORK/good/ca.der" "$SIZE" "$TOKEN")
+    "$GOOD_PORT" "$EVIL_PORT" "$FORGED_PORT" "$PLAIN_PORT" "$WORK/good/ca.der" "$SIZE" "$TOKEN")
 
 echo "[*] Unit tests (the root store's pinned hashes)"
 (cd host && cargo test --release --quiet)

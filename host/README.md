@@ -4,8 +4,8 @@ The firmware's `src/http.rs`, `src/png.rs` and `src/roots.rs`, compiled for
 the host through `#[path]` with the strict lints in `Cargo.toml`, and run
 against real servers and fixtures:
 
-- local TLS 1.3 and plain HTTP servers: protocol, framing, an impostor, the
-  chain memo;
+- local TLS 1.3 and plain HTTP servers: protocol, framing, an impostor and a
+  forged chain, the chain memo;
 - the live Makespace endpoint, when `wifi.env` has `TEST_MAKESPACE_TOKEN`;
 - PNG fixtures, checked byte for byte against independently computed
   outputs;

@@ -3,6 +3,7 @@
 # verifier accepts (P-256, ECDSA-with-SHA256, the name in the leaf's CN):
 #   ca.der                      the root to trust
 #   server.pem, server.key.pem  <name>, issued by an intermediate CA
+#   forged.pem, forged.key.pem  <name>, signed by an ordinary leaf
 #
 # Usage: gen_tls_cert.sh <name> <outdir>
 set -euo pipefail
@@ -25,4 +26,7 @@ openssl req -new -x509 -sha256 -key ca.key.pem -subj "/CN=$NAME root" -days 3650
 openssl x509 -in ca.crt.pem -outform der -out ca.der
 issue inter "$NAME intermediate" ca CA:TRUE
 issue server "$NAME" inter CA:FALSE
+issue ordinary "ordinary.$NAME" inter CA:FALSE
+issue forged "$NAME" ordinary CA:FALSE
 cat server.crt.pem inter.crt.pem > server.pem
+cat forged.crt.pem ordinary.crt.pem inter.crt.pem > forged.pem

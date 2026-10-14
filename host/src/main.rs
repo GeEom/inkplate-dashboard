@@ -184,6 +184,7 @@ impl Report {
 struct Local {
     good: u16,
     evil: u16,
+    forged: u16,
     plain: u16,
     ca: Vec<u8>,
     size: usize,
@@ -254,6 +255,16 @@ fn local_protocol(cfg: &Local, report: &mut Report) {
         "tls rejects swapped cert (MITM)",
         cfg.tls(cfg.evil, path, pinned(&roots, NAME, &mut ChainCache::new()))
             .run(&mut body, &mut Etag::new()),
+        is(Err(FetchError::Tls)),
+    );
+    report.check(
+        "tls rejects a name signed by an ordinary leaf (forgery)",
+        cfg.tls(
+            cfg.forged,
+            path,
+            pinned(&roots, NAME, &mut ChainCache::new()),
+        )
+        .run(&mut body, &mut Etag::new()),
         is(Err(FetchError::Tls)),
     );
     report.check(
@@ -493,14 +504,15 @@ fn png_fixtures(dir: &str, report: &mut Report) -> Result<(), String> {
 }
 
 fn local(args: &[String], report: &mut Report) -> Result<(), String> {
-    let [good, evil, plain, ca, size, token] = args else {
-        return Err("usage: <good> <evil> <plain> <ca.der> <size> <token>".into());
+    let [good, evil, forged, plain, ca, size, token] = args else {
+        return Err("usage: <good> <evil> <forged> <plain> <ca.der> <size> <token>".into());
     };
     let port = |p: &str| p.parse::<u16>().map_err(|e| format!("port {p}: {e}"));
     let body_size = size.parse().map_err(|e| format!("size: {e}"))?;
     let cfg = Local {
         good: port(good)?,
         evil: port(evil)?,
+        forged: port(forged)?,
         plain: port(plain)?,
         ca: std::fs::read(ca).map_err(|e| format!("{ca}: {e}"))?,
         size: body_size,

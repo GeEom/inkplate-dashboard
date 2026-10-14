@@ -302,7 +302,7 @@ impl MultiRootVerifier<'_> {
     }
 
     /// Each root against each truncation (cross-signed tails) whose top names
-    /// it as issuer.
+    /// it as issuer, with only CAs above the leaf.
     fn verify_path(
         &mut self,
         transcript: &Hash,
@@ -321,7 +321,11 @@ impl MultiRootVerifier<'_> {
                     Some(CertificateEntryRef::X509(top))
                         if issuer_subject(top).is_ok_and(|(issuer, _)| issuer == root_subject)
                 );
-                if !issued_by_root {
+                let signed_by_cas = entries
+                    .iter()
+                    .skip(1)
+                    .all(|entry| matches!(entry, CertificateEntryRef::X509(der) if is_ca(der)));
+                if !issued_by_root || !signed_by_cas {
                     continue;
                 }
                 self.cache.last_attempts = self.cache.last_attempts.saturating_add(1);
@@ -371,6 +375,41 @@ fn issuer_subject(cert_der: &[u8]) -> Result<(&[u8], &[u8]), TlsError> {
     let [_serial, _signature, issuer, _validity, subject] =
         [next()?, next()?, next()?, next()?, next()?];
     Ok((issuer, subject))
+}
+
+const EXTENSIONS: u8 = 0xA3;
+const BASIC_CONSTRAINTS: &[u8] = &[0x06, 0x03, 0x55, 0x1D, 0x13];
+const CRITICAL: &[u8] = &[0x01, 0x01, 0xFF];
+
+/// basicConstraints `cA`, which embedded-tls never checks: else any leaf
+/// could sign for any name.
+fn is_ca(cert_der: &[u8]) -> bool {
+    tbs_reader(cert_der).is_ok_and(|tbs| ca_flag(tbs) == Ok(true))
+}
+
+/// Only the TBS has `EXTENSIONS`.
+fn ca_flag(mut tbs: der::SliceReader<'_>) -> der::Result<bool> {
+    use der::{Decode as _, Reader as _};
+    while tbs.peek_byte().is_some_and(|tag| tag != EXTENSIONS) {
+        tbs.tlv_bytes()?;
+    }
+    if tbs.is_finished() {
+        return Ok(false);
+    }
+    let mut exts = der::SliceReader::new(tbs.tlv_bytes()?)?;
+    der::Header::decode(&mut exts)?;
+    der::Header::decode(&mut exts)?;
+    while !exts.is_finished() {
+        let mut ext = der::SliceReader::new(exts.tlv_bytes()?)?;
+        der::Header::decode(&mut ext)?;
+        if ext.tlv_bytes()? == BASIC_CONSTRAINTS {
+            // [critical,] OCTET STRING { SEQUENCE { cA TRUE, .. } }
+            let rest = ext.read_slice(ext.remaining_len())?;
+            let value = rest.strip_prefix(CRITICAL).unwrap_or(rest);
+            return Ok(matches!(value, [0x04, _, 0x30, _, 0x01, 0x01, 0xFF, ..]));
+        }
+    }
+    Ok(false)
 }
 
 fn spki_point(cert_der: &[u8]) -> Result<&[u8], TlsError> {
