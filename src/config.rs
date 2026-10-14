@@ -26,6 +26,23 @@ const _: () = assert!(
     "INKPLATE_TEST_PATTERN is 1 or grey"
 );
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Board {
+    /// First generation: 960x540.
+    Inkplate5,
+    Inkplate5V2,
+}
+
+const BOARD_ENV: &[u8] = or(set(option_env!("INKPLATE_BOARD")), "5v2").as_bytes();
+const _: () = assert!(
+    matches!(BOARD_ENV, b"5" | b"5v2"),
+    "INKPLATE_BOARD is 5 or 5v2"
+);
+/// Nothing at runtime tells the two panels apart.
+pub const BOARD: Board = match BOARD_ENV {
+    b"5" => Board::Inkplate5,
+    _ => Board::Inkplate5V2,
+};
 pub const WIFI_SSID: Option<&str> = set(option_env!("INKPLATE_WIFI_SSID"));
 pub const WIFI_PASS: &str = or(option_env!("INKPLATE_WIFI_PASS"), "");
 const URL: Option<&str> = set(option_env!("INKPLATE_SERVER_URL"));

@@ -2,9 +2,18 @@
 
 Bare-metal Rust firmware (`no_std`,
 [esp-hal](https://github.com/esp-rs/esp-hal)) that turns a Soldered
-[Inkplate 5 V2](https://soldered.com/) e-paper board into a self-updating display
+[Inkplate 5](https://soldered.com/) e-paper board into a self-updating display
 for an image served over HTTPS. It long-polls one URL over TLS 1.3 and
 repaints only when the picture changes, so the server decides what is shown.
+
+## Hardware
+
+| Board | Panel | Build |
+|---|---|---|
+| Inkplate 5 V2 | 1280x720 | default |
+| Inkplate 5, first generation | 960x540 | `INKPLATE_BOARD=5` |
+
+Nothing at runtime tells the two panels apart, so the build has to be told.
 
 ## Setup
 
@@ -26,7 +35,7 @@ Variables already set in the shell win over `wifi.env`, which is how one file
 serves several boards:
 
 ```bash
-INKPLATE_PORT=/dev/ttyUSB1 INKPLATE_SERVER_URL=https://example.org/board.png \
+INKPLATE_PORT=/dev/ttyUSB1 INKPLATE_BOARD=5 INKPLATE_SERVER_URL=https://example.org/board.png \
     python3 scripts/flash_and_monitor.py
 ```
 
@@ -126,6 +135,8 @@ it against:
   reads and logs it, and never writes it.
 - PSRAM holds the frame buffers, but the panel's DMA can't reach it, so each
   row is copied to internal SRAM.
+- The first-generation board scans bottom-up and has its own clear count,
+  pass sequence and grey waveform, chosen at compile time.
 
 ## Licence
 

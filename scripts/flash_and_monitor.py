@@ -6,7 +6,7 @@
 Variables set in the shell win over wifi.env, so one wifi.env serves several
 boards; INKPLATE_PORT picks the serial port (default /dev/ttyUSB0):
 
-    INKPLATE_PORT=/dev/ttyUSB1 INKPLATE_SERVER_URL=<url> \\
+    INKPLATE_PORT=/dev/ttyUSB1 INKPLATE_BOARD=5 INKPLATE_SERVER_URL=<url> \\
         python3 scripts/flash_and_monitor.py
 
 The board is reset as monitoring starts, so the log begins at boot. Under

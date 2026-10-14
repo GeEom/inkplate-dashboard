@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (c) 2026 David Gathercole; derived from Soldered's Inkplate library.
 
-//! Panel driver, after Soldered's Inkplate 5V2 driver. Verify register changes
-//! on glass: the panel ignores a wrong sequence silently.
+//! Panel driver, after Soldered's Inkplate5 and 5V2 drivers. Verify register
+//! changes on glass: the panel ignores a wrong sequence silently.
 
 use crate::canvas::{D_COLS, D_ROWS, FB_ROW_BYTES, LEVELS_ROW_BYTES};
+use crate::config::{BOARD, Board};
 use core::sync::atomic::{Ordering, compiler_fence};
 use esp_hal::{Blocking, delay::Delay, i2c::master::I2c};
 use esp_println::println;
@@ -140,7 +141,10 @@ const TPS_PG: u8 = 0x0F;
 const TPS_ALL_GOOD: u8 = 0xFA;
 
 const LINE_BYTES: usize = D_COLS / 4;
-const DMA_LEN: u32 = 328;
+const DMA_LEN: u32 = match BOARD {
+    Board::Inkplate5 => 248,
+    Board::Inkplate5V2 => 328,
+};
 const _: () = assert!(DMA_LEN as usize == LINE_BYTES + 8);
 /// `lldesc_t`: size, length, SOSF, EOF, DMA-owned.
 const DESC_CONFIG: u32 = field(DMA_LEN, 0) | field(DMA_LEN, 12) | bit(29) | bit(30) | bit(31);
@@ -164,10 +168,14 @@ const BLACK: u8 = 0x55;
 const DISCHARGE: u8 = 0x00;
 const LEAVE: u8 = 0xFF;
 
-const CLEARS: u8 = 11;
+const BOTTOM_UP: bool = matches!(BOARD, Board::Inkplate5);
+const CLEARS: u8 = match BOARD {
+    Board::Inkplate5 => 14,
+    Board::Inkplate5V2 => 11,
+};
 
 /// Soldered's `clean()` sequence.
-const RESET_SEQ: [(u8, u8); 8] = [
+const RESET_SEQ: [(u8, u8); 9] = [
     (WHITE, 1),
     (BLACK, CLEARS),
     (DISCHARGE, 1),
@@ -176,6 +184,13 @@ const RESET_SEQ: [(u8, u8); 8] = [
     (BLACK, CLEARS),
     (DISCHARGE, 1),
     (WHITE, CLEARS),
+    (
+        DISCHARGE,
+        match BOARD {
+            Board::Inkplate5 => 1,
+            Board::Inkplate5V2 => 0,
+        },
+    ),
 ];
 
 /// Nibble (first pixel in bit 3) to 2bpp: Soldered's LUT2 and LUTB.
@@ -185,20 +200,37 @@ const LUT_DRIVE: [u8; 16] = [
 const LUT_BLACK: [u8; 16] = [
     0xFF, 0xFD, 0xF7, 0xF5, 0xDF, 0xDD, 0xD7, 0xD5, 0x7F, 0x7D, 0x77, 0x75, 0x5F, 0x5D, 0x57, 0x55,
 ];
-const MONO_PASSES: &[&[u8; 16]] = &[&LUT_BLACK, &LUT_BLACK, &LUT_BLACK, &LUT_DRIVE];
+const MONO_PASSES: &[&[u8; 16]] = match BOARD {
+    Board::Inkplate5 => &[
+        &LUT_BLACK, &LUT_BLACK, &LUT_BLACK, &LUT_BLACK, &LUT_BLACK, &LUT_DRIVE,
+    ],
+    Board::Inkplate5V2 => &[&LUT_BLACK, &LUT_BLACK, &LUT_BLACK, &LUT_DRIVE],
+};
 
 const GREY_PHASES: usize = 9;
 /// Soldered's WAVEFORM3BIT, `[level][phase]`: 0 leave, 1 black, 2 white.
-const GREY_WAVEFORM: [[u8; GREY_PHASES]; 8] = [
-    [0, 0, 1, 1, 2, 1, 1, 1, 0],
-    [1, 1, 2, 2, 1, 2, 1, 1, 0],
-    [0, 1, 2, 2, 1, 1, 2, 1, 0],
-    [0, 0, 1, 1, 1, 1, 1, 2, 0],
-    [1, 2, 1, 2, 1, 1, 1, 2, 0],
-    [0, 1, 1, 1, 2, 0, 1, 2, 0],
-    [1, 1, 1, 2, 2, 2, 1, 2, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0],
-];
+const GREY_WAVEFORM: [[u8; GREY_PHASES]; 8] = match BOARD {
+    Board::Inkplate5 => [
+        [0, 0, 1, 1, 0, 1, 1, 1, 0],
+        [0, 1, 1, 1, 1, 2, 0, 1, 0],
+        [1, 2, 2, 0, 2, 1, 1, 1, 0],
+        [1, 1, 1, 2, 0, 1, 1, 2, 0],
+        [0, 1, 1, 1, 2, 0, 1, 2, 0],
+        [0, 0, 0, 1, 1, 2, 1, 2, 0],
+        [1, 1, 1, 2, 0, 2, 1, 2, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ],
+    Board::Inkplate5V2 => [
+        [0, 0, 1, 1, 2, 1, 1, 1, 0],
+        [1, 1, 2, 2, 1, 2, 1, 1, 0],
+        [0, 1, 2, 2, 1, 1, 2, 1, 0],
+        [0, 0, 1, 1, 1, 1, 1, 2, 0],
+        [1, 2, 1, 2, 1, 1, 1, 2, 0],
+        [0, 1, 1, 1, 2, 0, 1, 2, 0],
+        [1, 1, 1, 2, 2, 2, 1, 2, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ],
+};
 
 /// Soldered's GLUT: a level byte to 4 bits, odd pixel in bits 3-2.
 fn grey_lut(phase: usize) -> [u8; 256] {
@@ -393,7 +425,8 @@ impl<'a> Epd<'a> {
 
     fn pass(&mut self, mut fill: impl FnMut(usize, &mut [u8; LINE_BYTES])) {
         self.vscan_start();
-        for row in 0..D_ROWS {
+        for scan in 0..D_ROWS {
+            let row = if BOTTOM_UP { D_ROWS - 1 - scan } else { scan };
             fill(row, &mut self.dma.line);
             self.send_row();
         }
@@ -418,6 +451,7 @@ impl<'a> Epd<'a> {
             self.pass(|row, line| mono_row(fb, row, lut, line));
         }
         self.pass_uniform(DISCHARGE);
+        self.finish();
     }
 
     pub fn render_grey(&mut self, levels: &[u8]) {
@@ -426,6 +460,13 @@ impl<'a> Epd<'a> {
             self.pass(|row, line| grey_row(levels, row, &lut, line));
         }
         self.pass_uniform(LEAVE);
+        self.finish();
+    }
+
+    fn finish(&mut self) {
+        if BOARD == Board::Inkplate5 {
+            self.vscan_start();
+        }
     }
 }
 
