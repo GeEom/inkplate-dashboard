@@ -1,5 +1,6 @@
-# Host-side harness: compiles the firmware's src/png.rs (via #[path]) and runs
-# it against PNG fixtures. Run via scripts/host_tls_test.sh.
+# Host-side harness: compiles the firmware's src/http.rs and src/png.rs (via
+# #[path]) and runs them against a local HTTP server and PNG fixtures. Run via
+# scripts/host_tls_test.sh.
 [package]
 name = "inkplate-dashboard-host-tests"
 version = "0.1.0"
@@ -8,9 +9,12 @@ license = "MIT"
 publish = false
 
 [dependencies]
+embedded-io = "0.7"
 # Inflate for PNG frames (src/png.rs): no_std, no alloc; decompresses the
 # IDAT chunks straight into a caller-provided buffer.
 miniz_oxide = { version = "0.8", default-features = false }
+# The test server's body pattern.
+sha2 = "0.10"
 
 # Standalone: never absorbed into a parent workspace by accident.
 [workspace]
