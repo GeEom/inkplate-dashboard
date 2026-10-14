@@ -19,30 +19,25 @@ Nothing at runtime tells the two panels apart, so the build has to be told.
 
 - Rust for Xtensa: `espup install` (the `esp` channel; rustc 1.95 or later)
   and `espflash`. The host tests use stable Rust.
-- Python 3 with `pyserial` for the flash script; `openssl` for the host tests.
+- Python 3 and `openssl` for the host tests.
 - `cp wifi.env.example wifi.env` and fill it in: the 2.4GHz WPA2 network, the
   image's URL and, if the server wants one, a bearer token.
 
 ## Build and flash
 
 ```bash
-python3 scripts/flash_and_monitor.py [seconds]
+scripts/flash.sh
 ```
 
-Builds with the settings in `wifi.env`, flashes `/dev/ttyUSB0`, resets the
-board and shows the serial log (115200 baud) for `seconds` (default 15).
-Variables already set in the shell win over `wifi.env`, which is how one file
-serves several boards:
+Builds with the settings in `wifi.env`, flashes the board with `espflash` and
+shows its serial log. Variables already set in the shell win over `wifi.env`,
+which is how one file serves several boards, and any arguments go to
+`espflash`:
 
 ```bash
-INKPLATE_PORT=/dev/ttyUSB1 INKPLATE_BOARD=5 INKPLATE_SERVER_URL=https://example.org/board.png \
-    python3 scripts/flash_and_monitor.py
+INKPLATE_BOARD=5 INKPLATE_SERVER_URL=https://example.org/board.png \
+    scripts/flash.sh --port /dev/ttyUSB1
 ```
-
-Under WSL the script attaches a missing port with `usbipd`; bind the board
-once first (`usbipd bind`, as administrator), and set `INKPLATE_BUSID` if
-several are bound. With the same variables exported, `cargo run --release`
-also builds and flashes.
 
 `INKPLATE_TEST_PATTERN=1` draws a two-tone geometry pattern and halts; `=grey`
 draws a sample screen with eight grey swatches. Neither needs WiFi.

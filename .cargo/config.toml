@@ -2,7 +2,7 @@
 target = "xtensa-esp32-none-elf"
 
 [target.xtensa-esp32-none-elf]
-runner = "espflash flash"
+runner = "espflash flash --monitor"
 rustflags = [
     "-C", "link-arg=-nostartfiles",
     "-C", "link-arg=-Tlinkall.x",
