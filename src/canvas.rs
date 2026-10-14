@@ -1,5 +1,6 @@
 //! The PSRAM buffers, and drawing into them.
 
+use crate::png;
 use alloc::format;
 use esp_hal::psram::Psram;
 
@@ -7,13 +8,21 @@ pub const D_COLS: usize = 1280;
 pub const D_ROWS: usize = 720;
 const SCALE: usize = D_COLS / 160;
 pub const FB_ROW_BYTES: usize = D_COLS / 8;
+pub const LEVELS_ROW_BYTES: usize = D_COLS / 2;
 const FB_BYTES: usize = FB_ROW_BYTES * D_ROWS;
+const LEVELS_BYTES: usize = png::levels_len(D_COLS, D_ROWS);
+const BODY_BYTES: usize = 256 * 1024;
+const SCRATCH_BYTES: usize = png::raw_len(D_COLS, D_ROWS, 8);
 
 /// CPU-only: PSRAM's DMA limits never apply.
 pub struct Buffers {
     _psram: Psram,
     /// 1bpp, MSB leftmost, 1 = black.
     pub fb: &'static mut [u8],
+    /// 4bpp panel levels, even x in the high nibble, 0 = black.
+    pub levels: &'static mut [u8],
+    pub body: &'static mut [u8],
+    pub scratch: &'static mut [u8],
 }
 
 impl Buffers {
@@ -25,7 +34,29 @@ impl Buffers {
         let mut mem = unsafe { core::slice::from_raw_parts_mut(base, len) };
         Some(Self {
             fb: mem.split_off_mut(..FB_BYTES)?,
+            levels: mem.split_off_mut(..LEVELS_BYTES)?,
+            body: mem.split_off_mut(..BODY_BYTES)?,
+            scratch: mem.split_off_mut(..SCRATCH_BYTES)?,
             _psram: psram,
+        })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Frame {
+    Mono,
+    Grey,
+}
+
+impl Frame {
+    /// FNV-1a: the same picture is never repainted.
+    pub fn hash(self, bufs: &Buffers) -> u64 {
+        let data: &[u8] = match self {
+            Self::Mono => bufs.fb,
+            Self::Grey => bufs.levels,
+        };
+        data.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
         })
     }
 }
@@ -42,6 +73,26 @@ fn fb_fill(fb: &mut [u8], (x0, y0): (usize, usize), (w, h): (usize, usize)) {
     for y in y0..y0 + h {
         for x in x0..x0 + w {
             fb_set(fb, x, y);
+        }
+    }
+}
+
+fn level_set(levels: &mut [u8], x: usize, y: usize, level: u8) {
+    if x < D_COLS
+        && let Some(byte) = levels.get_mut(y * LEVELS_ROW_BYTES + x / 2)
+    {
+        *byte = if x.is_multiple_of(2) {
+            (*byte & 0x0F) | (level << 4)
+        } else {
+            (*byte & 0xF0) | level
+        };
+    }
+}
+
+fn level_fill(levels: &mut [u8], (x0, y0): (usize, usize), (w, h): (usize, usize), level: u8) {
+    for y in y0..y0 + h {
+        for x in x0..x0 + w {
+            level_set(levels, x, y, level);
         }
     }
 }
@@ -113,6 +164,14 @@ fn draw_text(
     }
 }
 
+pub fn status_text(fb: &mut [u8], lines: &[&str]) {
+    fb.fill(0);
+    for (i, line) in lines.iter().enumerate() {
+        let at = (SCALE * 15 / 2, SCALE * (15 + 20 * i));
+        draw_text(line, at, SCALE, &mut |x, y| fb_set(fb, x, y));
+    }
+}
+
 /// Border (cropping), corner labels (mirroring), fine detail at odd column
 /// phases (nibble order).
 pub fn mono_test_pattern(fb: &mut [u8]) {
@@ -141,4 +200,27 @@ pub fn mono_test_pattern(fb: &mut [u8]) {
             fb_set(fb, (140 + 30 * k) * SCALE / 8 + i, middle + 110 + i);
         }
     }
+}
+
+pub fn grey_test_pattern(levels: &mut [u8], scratch: &mut [u8]) -> Result<(), png::PngError> {
+    const TICKETS: &[u8] =
+        include_bytes!("../host/fixtures/png/makespace_tickets_1280x720_4tone.png");
+    png::decode(TICKETS, D_COLS, D_ROWS, scratch)?.to_levels(levels)?;
+    let (w, gap, h, label) = (8 * SCALE, SCALE, SCALE * 25 / 4, SCALE * 3 / 8);
+    let top = D_ROWS - SCALE * 45 / 4;
+    let x0 = D_COLS - 20 - (8 * w + 7 * gap);
+    for (i, level) in (0..8u8).enumerate() {
+        let x = x0 + i * (w + gap);
+        level_fill(levels, (x, top), (w, h), 0);
+        level_fill(levels, (x + 2, top + 2), (w - 4, h - 4), level);
+        let digit = char::from(b'0' + level);
+        let mut set = |px, py| level_set(levels, px, py, 0);
+        draw_text(
+            digit.encode_utf8(&mut [0; 4]),
+            (x + w / 2 - label * 5 / 2, top + h + 6),
+            label,
+            &mut set,
+        );
+    }
+    Ok(())
 }

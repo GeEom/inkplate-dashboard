@@ -4,7 +4,7 @@
 //! Panel driver, after Soldered's Inkplate 5V2 driver. Verify register changes
 //! on glass: the panel ignores a wrong sequence silently.
 
-use crate::canvas::{D_COLS, D_ROWS, FB_ROW_BYTES};
+use crate::canvas::{D_COLS, D_ROWS, FB_ROW_BYTES, LEVELS_ROW_BYTES};
 use core::sync::atomic::{Ordering, compiler_fence};
 use esp_hal::{Blocking, delay::Delay, i2c::master::I2c};
 use esp_println::println;
@@ -162,6 +162,7 @@ static DMA: ConstStaticCell<Dma> = ConstStaticCell::new(Dma {
 const WHITE: u8 = 0xAA;
 const BLACK: u8 = 0x55;
 const DISCHARGE: u8 = 0x00;
+const LEAVE: u8 = 0xFF;
 
 const CLEARS: u8 = 11;
 
@@ -185,6 +186,31 @@ const LUT_BLACK: [u8; 16] = [
     0xFF, 0xFD, 0xF7, 0xF5, 0xDF, 0xDD, 0xD7, 0xD5, 0x7F, 0x7D, 0x77, 0x75, 0x5F, 0x5D, 0x57, 0x55,
 ];
 const MONO_PASSES: &[&[u8; 16]] = &[&LUT_BLACK, &LUT_BLACK, &LUT_BLACK, &LUT_DRIVE];
+
+const GREY_PHASES: usize = 9;
+/// Soldered's WAVEFORM3BIT, `[level][phase]`: 0 leave, 1 black, 2 white.
+const GREY_WAVEFORM: [[u8; GREY_PHASES]; 8] = [
+    [0, 0, 1, 1, 2, 1, 1, 1, 0],
+    [1, 1, 2, 2, 1, 2, 1, 1, 0],
+    [0, 1, 2, 2, 1, 1, 2, 1, 0],
+    [0, 0, 1, 1, 1, 1, 1, 2, 0],
+    [1, 2, 1, 2, 1, 1, 1, 2, 0],
+    [0, 1, 1, 1, 2, 0, 1, 2, 0],
+    [1, 1, 1, 2, 2, 2, 1, 2, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+/// Soldered's GLUT: a level byte to 4 bits, odd pixel in bits 3-2.
+fn grey_lut(phase: usize) -> [u8; 256] {
+    let wave = |level: usize| {
+        GREY_WAVEFORM
+            .get(level & 7)
+            .and_then(|codes| codes.get(phase))
+            .copied()
+            .unwrap_or_default()
+    };
+    core::array::from_fn(|byte| (wave(byte) << 2) | wave(byte >> 4))
+}
 
 fn addr<T>(ptr: *const T) -> u32 {
     u32::try_from(ptr.expose_provenance()).unwrap_or_default()
@@ -393,6 +419,14 @@ impl<'a> Epd<'a> {
         }
         self.pass_uniform(DISCHARGE);
     }
+
+    pub fn render_grey(&mut self, levels: &[u8]) {
+        for phase in 0..GREY_PHASES {
+            let lut = grey_lut(phase);
+            self.pass(|row, line| grey_row(levels, row, &lut, line));
+        }
+        self.pass_uniform(LEAVE);
+    }
 }
 
 /// Right to left: from the last byte, bit-reversed, in pairs swapped for the
@@ -410,6 +444,21 @@ fn mono_row(fb: &[u8], row: usize, lut: &[u8; 16], line: &mut [u8; LINE_BYTES]) 
         let &[b1, b0] = pair else { continue };
         let (d0, d1) = (b0.reverse_bits(), b1.reverse_bits());
         out.copy_from_slice(&[code(d1 >> 4), code(d1), code(d0 >> 4), code(d0)]);
+    }
+}
+
+/// Soldered's display3b.
+fn grey_row(levels: &[u8], row: usize, lut: &[u8; 256], line: &mut [u8; LINE_BYTES]) {
+    let src = levels
+        .get(row * LEVELS_ROW_BYTES..(row + 1) * LEVELS_ROW_BYTES)
+        .unwrap_or_default();
+    let code = |byte: u8| lut.get(usize::from(byte)).copied().unwrap_or_default();
+    let px4 = |hi: u8, lo: u8| (code(hi) << 4) | code(lo);
+    for (out, bytes) in line.chunks_exact_mut(4).zip(src.rchunks_exact(8)) {
+        let &[c0, c1, c2, c3, c4, c5, c6, c7] = bytes else {
+            continue;
+        };
+        out.copy_from_slice(&[px4(c3, c2), px4(c1, c0), px4(c7, c6), px4(c5, c4)]);
     }
 }
 

@@ -19,9 +19,41 @@ esp-hal = { version = "1.1.1", features = ["esp32", "unstable", "rt"] }
 esp-backtrace = { version = "0.19", features = ["esp32", "panic-handler", "println"] }
 esp-println = { version = "0.17", features = ["esp32"] }
 esp-bootloader-esp-idf = { version = "0.5", features = ["esp32"] }
+# The radio's scheduler comes from esp-rtos, started in main.
+esp-radio = { version = "1.0.0-beta.0", features = ["esp32", "wifi", "unstable"] }
+esp-rtos = { version = "0.3.0", features = ["esp32", "esp-radio", "esp-alloc"] }
 esp-alloc = "0.10"
-# Hands out the DMA buffer once, without `static mut`.
+smoltcp = { version = "0.13", default-features = false, features = [
+    "medium-ethernet",
+    "proto-ipv4",
+    "proto-dhcpv4",
+    "socket-dhcpv4",
+    "socket-tcp",
+    "socket-dns",
+] }
+# TLS 1.3 client, pure Rust, no_std. rustpki verifies chains in Rust (P-256;
+# p384 adds the P-384 signatures public CAs such as GTS and ISRG use above the
+# leaf). src/http.rs drives it with NoClock, so validity windows go unchecked.
+embedded-tls = { version = "=0.19.0", default-features = false, features = ["rustpki", "p384"] }
+embedded-io = { version = "0.7", default-features = false }
+# Used directly by the multi-root verifier's CertificateVerify check
+# (src/http.rs); versions track embedded-tls's own pins so types unify.
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "sha256"] }
+p384 = { version = "0.13", default-features = false, features = ["ecdsa", "sha384"] }
+sha2 = { version = "0.10", default-features = false }
+der = { version = "0.8", default-features = false }
+# Inflate for PNG frames (src/png.rs): no_std, no alloc; decompresses the
+# IDAT chunks straight into a caller-provided buffer.
+miniz_oxide = { version = "0.8", default-features = false }
+# Hands out each DMA, socket and TLS buffer once, without `static mut`.
 static_cell = "2.1"
+
+# The radio needs opt-level 2/3 and broke under fat LTO + opt-level "s"
+# (garbage pointers inside the wifi blob), as in esp-hal's wifi examples.
+[profile.release]
+opt-level = 3
+lto = false
+codegen-units = 1
 
 [lints.rust]
 rust_2024_compatibility = { level = "deny", priority = -1 }
