@@ -3,7 +3,7 @@
 Bare metal Rust firmware (`no_std`,
 [esp-hal](https://github.com/esp-rs/esp-hal)) that turns a Soldered
 [Inkplate 5](https://soldered.com/) e-paper board into a self-updating display
-for an image served over HTTPS. It long-polls one URL over TLS 1.3 and
+for an image served over HTTPS. It long polls one URL over TLS 1.3 and
 repaints only when the picture changes, so the server decides what is shown.
 
 ## Hardware
