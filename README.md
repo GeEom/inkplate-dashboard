@@ -61,8 +61,9 @@ server's certificate must be ECDSA and chain to one of the roots in
 `src/roots/`, as Let's Encrypt's ECDSA certificates do.
 
 Makespace's [members-app](https://github.com/Makespace/members-app) implements
-this for its machines' trouble-ticket screens, at
-`/equipment/<machine>/trouble-tickets.png`.
+this for its machines' trouble-ticket screens, at `/e-ink/<n>.png`. Each board
+is flashed once with its own number, and which machine that number shows is
+chosen in the app at `/e-ink`, so moving a board needs no reflash.
 
 ## What the panel shows
 

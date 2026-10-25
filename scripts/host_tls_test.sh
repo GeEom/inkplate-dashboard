@@ -47,7 +47,7 @@ echo "[*] Building + running host scenarios"
 LIVE=${LIVE:-1}
 [ "$LIVE" = 1 ] || MS_HOST=
 MS_HOST=${MS_HOST-app.makespace.org}
-MS_PATH=${MS_PATH-/equipment/wood-shop-band-saw/trouble-tickets.png?width=1280&height=720}
+MS_PATH=${MS_PATH-/e-ink/1.png?width=1280&height=720}
 MS_TOKEN=${MS_TOKEN-$(grep "^TEST_MAKESPACE_TOKEN=" wifi.env 2>/dev/null | cut -d= -f2- || true)}
 if [ -n "$MS_HOST" ] && [ -n "$MS_TOKEN" ]; then export MS_HOST MS_PATH MS_TOKEN; fi
 (cd host && cargo run --release --quiet -- \

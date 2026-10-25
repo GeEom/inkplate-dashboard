@@ -395,7 +395,7 @@ fn live_makespace(report: &mut Report, foreign: &[&[u8]]) {
         return;
     };
     let bearer = Some(token.as_str());
-    let unknown = "/equipment/no-such-machine-xyz/trouble-tickets.png?width=1280&height=720";
+    let unknown = "/e-ink/0.png?width=1280&height=720";
     let x2: [&[u8]; 1] = [include_bytes!("../../src/roots/isrg_root_x2.der")];
     let mut body = vec![0; 256 * 1024];
     let mut scratch = vec![0; png::raw_len(PANEL.0, PANEL.1, 8)];
@@ -452,7 +452,7 @@ fn live_makespace(report: &mut Report, foreign: &[&[u8]]) {
         is(Err(FetchError::Tls)),
     );
     report.check(
-        "makespace: unknown machine -> HttpStatus(404)",
+        "makespace: unknown display -> HttpStatus(404)",
         Get::web(&host, unknown, bearer, store(&host, &mut cache)).run(&mut body, &mut Etag::new()),
         is(Err(FetchError::HttpStatus(404))),
     );
