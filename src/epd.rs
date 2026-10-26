@@ -481,7 +481,12 @@ fn mono_row(fb: &[u8], row: usize, lut: &[u8; 16], line: &mut [u8; LINE_BYTES]) 
             .copied()
             .unwrap_or_default()
     };
-    for (out, pair) in line.chunks_exact_mut(4).zip(src.rchunks_exact(2)) {
+    for (out, pair) in line
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src.rchunks_exact(2))
+    {
         let &[b1, b0] = pair else { continue };
         let (d0, d1) = (b0.reverse_bits(), b1.reverse_bits());
         out.copy_from_slice(&[code(d1 >> 4), code(d1), code(d0 >> 4), code(d0)]);
@@ -495,7 +500,12 @@ fn grey_row(levels: &[u8], row: usize, lut: &[u8; 256], line: &mut [u8; LINE_BYT
         .unwrap_or_default();
     let code = |byte: u8| lut.get(usize::from(byte)).copied().unwrap_or_default();
     let px4 = |hi: u8, lo: u8| (code(hi) << 4) | code(lo);
-    for (out, bytes) in line.chunks_exact_mut(4).zip(src.rchunks_exact(8)) {
+    for (out, bytes) in line
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src.rchunks_exact(8))
+    {
         let &[c0, c1, c2, c3, c4, c5, c6, c7] = bytes else {
             continue;
         };
