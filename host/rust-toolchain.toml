@@ -1,2 +1,5 @@
+# Pinned for check.sh, which stops unless this file reads exactly so.
 [toolchain]
-channel = "stable"
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
