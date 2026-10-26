@@ -11,6 +11,7 @@ pub const ROOTS: &[&[u8]] = &[
 
 #[cfg(test)]
 mod tests {
+    use core::fmt::Write as _;
     use sha2::{Digest as _, Sha256};
 
     const SHA256: [&str; 5] = [
@@ -23,10 +24,16 @@ mod tests {
 
     #[test]
     fn store_matches_pinned_hashes() {
-        let hashes: Vec<String> = super::ROOTS
+        let hashes: Result<Vec<String>, core::fmt::Error> = super::ROOTS
             .iter()
-            .map(|der| format!("{:x}", Sha256::digest(der)))
+            .map(|der| {
+                Sha256::digest(der)
+                    .iter()
+                    .try_fold(String::new(), |mut hex, b| {
+                        write!(hex, "{b:02x}").map(|()| hex)
+                    })
+            })
             .collect();
-        assert_eq!(hashes, SHA256);
+        assert_eq!(hashes, Ok(SHA256.map(String::from).to_vec()));
     }
 }

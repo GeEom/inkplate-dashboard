@@ -2,7 +2,6 @@
 
 use crate::http::{self, Etag, FetchError, FetchOutcome, TlsBufs, TlsVerify};
 use esp_hal::delay::Delay;
-use esp_hal::rng::Trng;
 use esp_println::println;
 use esp_radio::wifi::{Config as WifiConfig, WifiController, sta::StationConfig};
 use smoltcp::iface::{Config as IfaceConfig, Interface, SocketHandle, SocketSet, SocketStorage};
@@ -82,7 +81,6 @@ pub struct Get<'a> {
     pub host: &'a str,
     pub path: &'a str,
     pub bearer: Option<&'a str>,
-    pub rng: &'a mut Trng,
     pub verify: TlsVerify<'a>,
 }
 
@@ -365,7 +363,7 @@ impl<'d> Net<'d> {
             read: &mut *self.tls_read,
             write: &mut *self.tls_write,
         };
-        let result = http::tls_exchange(io, bufs, get.rng, get.verify, request, response);
+        let result = http::tls_exchange(io, bufs, get.verify, request, response);
         let t_end = millis();
         self.last_timing = FetchTiming {
             setup_ms: t_sent.map(|t| t - t_start),

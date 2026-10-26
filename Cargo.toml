@@ -31,17 +31,30 @@ smoltcp = { version = "0.13", default-features = false, features = [
     "socket-tcp",
     "socket-dns",
 ] }
-# TLS 1.3 client, pure Rust, no_std. rustpki verifies chains in Rust (P-256;
-# p384 adds the P-384 signatures public CAs such as GTS and ISRG use above the
-# leaf). src/http.rs drives it with NoClock, so validity windows go unchecked.
-embedded-tls = { version = "=0.19.0", default-features = false, features = ["rustpki", "p384"] }
+# TLS 1.3 client, pure Rust, no_std. Its webpki verifier checks chains with
+# rustls-webpki, P-256 and P-384 (public CAs such as GTS and ISRG sign with
+# P-384 above the leaf). src/http.rs drives it without a clock: see the README.
+embedded-tls = { git = "https://github.com/embassy-rs/embedded-tls", rev = "6487c62bb084c33361822022e21836ddfd48388f", default-features = false, features = ["webpki", "p256", "p384"] }
+# embedded-tls's crypto, linked in as software drivers; the RNG driver is the
+# TRNG, registered in src/main.rs.
+embassy-crypto-rustcrypto = { git = "https://github.com/embassy-rs/embassy", rev = "822a76ea91f2c0885c6eb0c65fe91181e31133e1", features = [
+    "embassy-crypto-sha256",
+    "embassy-crypto-sha384",
+    "embassy-crypto-hmac-sha256",
+    "embassy-crypto-aes128-gcm",
+    "embassy-crypto-p256-ecdh",
+    "embassy-crypto-p256-ecdsa",
+    "embassy-crypto-p384-ecdsa",
+] }
 embedded-io = { version = "0.7", default-features = false }
-# Used directly by the multi-root verifier's CertificateVerify check
-# (src/http.rs); versions track embedded-tls's own pins so types unify.
-p256 = { version = "0.13", default-features = false, features = ["ecdsa", "sha256"] }
-p384 = { version = "0.13", default-features = false, features = ["ecdsa", "sha384"] }
-sha2 = { version = "0.10", default-features = false }
-der = { version = "0.8", default-features = false }
+# Used directly when the chain memo skips path-building and src/http.rs checks
+# CertificateVerify through rustls-webpki; versions track embedded-tls's own
+# pins so types unify. ecdsa is here for its DER signatures.
+webpki = { package = "rustls-webpki", version = "0.103.16", default-features = false }
+pki-types = { package = "rustls-pki-types", version = "1.14", default-features = false }
+p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
+p384 = { version = "0.14", default-features = false, features = ["ecdsa"] }
+ecdsa = { version = "0.17", default-features = false, features = ["der"] }
 # Inflate for PNG frames (src/png.rs): no_std, no alloc; decompresses the
 # IDAT chunks straight into a caller-provided buffer.
 miniz_oxide = { version = "0.8", default-features = false }

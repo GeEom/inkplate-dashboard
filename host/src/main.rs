@@ -11,6 +11,8 @@ mod png;
 mod roots;
 
 use core::fmt::{self, Debug};
+use embassy_crypto_rand as _;
+use embassy_crypto_rustcrypto as _;
 use http::{
     ChainCache, Etag, FetchError, FetchOutcome, IntoFetchError, Request, Response, TlsBufs,
     TlsVerify,
@@ -145,7 +147,7 @@ impl<'a> Get<'a> {
                     read: &mut vec![0; http::TLS_READ],
                     write: &mut vec![0; http::TLS_WRITE],
                 };
-                http::tls_exchange(io, bufs, rand_core::OsRng, verify, request, response)
+                http::tls_exchange(io, bufs, verify, request, response)
             }
         }
     }
@@ -394,11 +396,14 @@ fn local_chain_memo(cfg: &Local, report: &mut Report) {
         |&(r, hit, _)| warmed.is_ok() && r == Err(FetchError::Tls) && !hit,
     );
     report.check(
-        "issuer pre-check: foreign roots skipped",
+        "store order: foreign roots tried first, then the test root",
         fetch(cfg.good, NAME, &all, &mut ChainCache::new()),
-        |&(r, _, attempts)| r.is_ok() && attempts == 1,
+        |&(r, _, attempts)| r.is_ok() && usize::from(attempts) == all.len(),
     );
 }
+
+/// ISRG Root YE's place in `roots::ROOTS`, counting from 1.
+const YE: u8 = 3;
 
 /// Makespace on Fly.io: Let's Encrypt Generation Y, all P-384 above the leaf.
 fn live_makespace(report: &mut Report, foreign: &[&[u8]]) {
@@ -432,9 +437,9 @@ fn live_makespace(report: &mut Report, foreign: &[&[u8]]) {
         _ => Err(png::PngError::Truncated),
     };
     report.check(
-        "makespace: 200 + PNG decodes 1280x720, 1 chain candidate",
+        "makespace: 200 + PNG decodes 1280x720, verified at ISRG Root YE",
         (first, decoded, cache.last_attempts),
-        |&(_, decoded, attempts)| decoded.is_ok() && attempts == 1,
+        |&(_, decoded, attempts)| decoded.is_ok() && attempts == YE,
     );
     report.check(
         "makespace: 304 on match, chain memo hit",

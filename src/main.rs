@@ -17,6 +17,7 @@ mod roots;
 use alloc::format;
 use canvas::{Buffers, Frame};
 use config::Server;
+use embassy_crypto_rustcrypto as _;
 use epd::Epd;
 use esp_backtrace as _;
 use esp_hal::{
@@ -37,6 +38,21 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 /// At most 50: esp-hal counts 80MHz ticks in a u32, wrapping past ~53s.
 const WDT_TIMEOUT_S: u64 = 50;
+
+/// embassy-crypto's RNG, so TLS keys come from the TRNG.
+struct TrngDriver;
+
+impl embedded_tls::embassy_crypto::driver::Rng for TrngDriver {
+    fn fill_bytes(buf: &mut [u8]) {
+        // The source is held for the life of `main`.
+        match Trng::try_new() {
+            Ok(trng) => trng.read(buf),
+            Err(_) => halt("trng source gone"),
+        }
+    }
+}
+
+embedded_tls::embassy_crypto::rng_impl!(TrngDriver);
 
 fn halt(why: &str) -> ! {
     println!("inkplate5: {why}, halting");
@@ -158,7 +174,6 @@ fn main() -> ! {
         net,
         wdt,
         delay,
-        trng,
         server,
         ssid,
         t_boot,

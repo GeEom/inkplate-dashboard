@@ -7,7 +7,7 @@ use crate::http::{ChainCache, FetchError, FetchOutcome};
 use crate::net::{FetchTiming, Get, Net, NetError};
 use crate::png;
 use alloc::{format, string::String};
-use esp_hal::{delay::Delay, peripherals::TIMG0, rng::Trng, time::Instant, timer::timg::Wdt};
+use esp_hal::{delay::Delay, peripherals::TIMG0, time::Instant, timer::timg::Wdt};
 use esp_println::println;
 use smoltcp::wire::Ipv4Address;
 
@@ -89,7 +89,6 @@ pub struct Parts<'a> {
     pub net: Net<'a>,
     pub wdt: Wdt<TIMG0<'static>>,
     pub delay: Delay,
-    pub trng: Trng,
     pub server: Server,
     pub ssid: &'static str,
     /// `software_reset` doesn't zero the time counter.
@@ -170,7 +169,6 @@ impl Kiosk<'_> {
             net,
             wdt,
             delay,
-            trng,
             server,
             bufs,
             ..
@@ -194,7 +192,6 @@ impl Kiosk<'_> {
             host: server.host,
             path: &server.path,
             bearer: server.bearer,
-            rng: trng,
             verify: server.tls(&mut self.chain),
         };
         net.get(get, bufs.body, *delay, &mut feed)
