@@ -12,8 +12,8 @@ file's SHA-256.
 | `isrg_root_x2.der` | ISRG Root X2 | Ubuntu `ca-certificates` |
 | `sslcom_tls_ecc_2022.der` | SSL.com TLS ECC Root CA 2022 | Ubuntu `ca-certificates` |
 
-A root is tried only where some certificate in the served chain names it as
-issuer (the chain is cut below that certificate), so the order matters only
+Each root is tried in turn until one verifies the chain. rustls-webpki checks
+signatures only along a path that ends at the root, so the order matters only
 where more than one root could anchor a chain. Root YE comes before X2: it
 anchors Let's Encrypt's Generation Y one hop below X2's cross-sign, which
 saves a P-384 verification.

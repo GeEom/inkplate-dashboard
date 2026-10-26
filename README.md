@@ -110,11 +110,13 @@ runs it against these.
 ## Design notes
 
 - TLS: embedded-tls with one cipher suite (`TLS_AES_128_GCM_SHA256`) and
-  ECDSA chains (P-256, P-384), verified against the five roots in
-  `src/roots/` (see its README). Every certificate above the leaf must be a
-  CA, which embedded-tls doesn't check itself. The board has no clock. It
-  checks neither expiry nor revocation. The last verified chain is
-  remembered, which cuts a repeat handshake from about 9s to under 1s.
+  ECDSA chains (P-256, P-384), which rustls-webpki verifies against the five
+  roots in `src/roots/` (see its README), tried in turn. The host name must be
+  in the leaf's subjectAltName. The board has no clock, so the newest
+  `notBefore` in the served chain stands in for the time: a certificate
+  already expired by then fails, but nothing checks the real date or
+  revocation. The last verified chain is remembered, which cuts a repeat
+  handshake from about 9s to under 1s.
 - `wifi.env` is compiled into the firmware, and the ESP32's flash can be read
   over USB, so a flashed board carries the WiFi password and the token. The
   token goes in a header, never in the logged URL.
