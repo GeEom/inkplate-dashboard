@@ -18,7 +18,7 @@ the board.
 
 ## Setup
 
-- `espup install` for Rust on Xtensa (the `esp` channel, rustc 1.95 or
+- `espup install` for Rust on Xtensa (the `esp` channel, rustc 1.99 or
   later) and `espflash`, plus stable Rust for the host tests.
 - Python 3 and `openssl` for the host tests.
 - `cp wifi.env.example wifi.env` and fill it in: the 2.4GHz WPA2 network, the
