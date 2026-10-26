@@ -13,12 +13,13 @@ repaints only when the picture changes, so the server decides what is shown.
 | Inkplate 5 V2 | 1280x720 | default |
 | Inkplate 5, first generation | 960x540 | `INKPLATE_BOARD=5` |
 
-Nothing at runtime tells the two panels apart, so the build has to be told.
+The firmware can't tell the two panels apart at runtime, so the build names
+the board.
 
 ## Setup
 
-- Rust for Xtensa: `espup install` (the `esp` channel; rustc 1.95 or later)
-  and `espflash`. The host tests use stable Rust.
+- `espup install` for Rust on Xtensa (the `esp` channel, rustc 1.95 or
+  later) and `espflash`, plus stable Rust for the host tests.
 - Python 3 and `openssl` for the host tests.
 - `cp wifi.env.example wifi.env` and fill it in: the 2.4GHz WPA2 network, the
   image's URL and, if the server wants one, a bearer token.
@@ -29,8 +30,8 @@ Nothing at runtime tells the two panels apart, so the build has to be told.
 scripts/flash.sh
 ```
 
-Builds with the settings in `wifi.env`, flashes the board with `espflash` and
-shows its serial log. Variables already set in the shell win over `wifi.env`,
+It compiles with the settings in `wifi.env`, flashes the board with `espflash`
+and then shows the serial log. Variables already set in the shell win over `wifi.env`,
 which is how one file serves several boards, and any arguments go to
 `espflash`:
 
@@ -39,8 +40,8 @@ INKPLATE_BOARD=5 INKPLATE_SERVER_URL=https://example.org/board.png \
     scripts/flash.sh --port /dev/ttyUSB1
 ```
 
-`INKPLATE_TEST_PATTERN=1` draws a two-tone geometry pattern and halts; `=grey`
-draws a sample screen with eight grey swatches. Neither needs WiFi.
+`INKPLATE_TEST_PATTERN=1` paints a two-tone geometry pattern and halts. With
+`=grey` it paints eight grey swatches instead, and neither needs WiFi.
 
 ## The server
 
@@ -56,25 +57,26 @@ as `Authorization: Bearer`. The server should answer with:
 - 401 or 403 for a bad token, 404 for a bad URL.
 
 `tones` asks for at most that many grey levels; the panel shows up to eight.
-`wait=55` stays inside the 60s idle cut common to hosting proxies. The
+`wait=55` keeps under the 60s idle cut common to hosting proxies. The
 server's certificate must be ECDSA and chain to one of the roots in
 `src/roots/`, as Let's Encrypt's ECDSA certificates do.
 
 Makespace's [members-app](https://github.com/Makespace/members-app) implements
 this for its machines' trouble-ticket screens, at `/e-ink/<n>.png`. Each board
-is flashed once with its own number, and which machine that number shows is
-chosen in the app at `/e-ink`, so moving a board needs no reflash.
+is flashed once with its own number. The app's `/e-ink` page says which
+machine each number shows, so a board can move without a reflash.
 
 ## What the panel shows
 
-A held request is followed at once by the next; a quick answer or a failure,
-after a minute. A new image is repainted only if its pixels differ from what's
-on the panel: through the eight-level waveform if it has any grey, else the
-faster two-tone passes. The hash of the frame on show is kept in RTC RAM, so
-the daily maintenance reboot doesn't repaint an unchanged picture.
+After a held request the next one goes out at once. After a quick answer or a
+failure the board waits a minute. The panel repaints a new image only when its
+pixels differ from the picture on show. It uses the eight-level waveform for
+an image with grey and the faster two-tone passes for one without. The frame's
+hash lives in RTC RAM, so the daily reboot doesn't repaint an unchanged
+picture.
 
-Otherwise the panel shows one of these, each drawn once. Text is drawn in
-capitals; characters other than letters, digits and `:.-/` are left blank.
+Otherwise the panel shows one of these screens, each drawn once. Text is in
+capitals. Characters other than letters, digits and `:.-/` come out blank.
 
 | Screen | Meaning |
 |---|---|
@@ -91,12 +93,12 @@ capitals; characters other than letters, digits and `:.-/` are left blank.
 scripts/host_tls_test.sh
 ```
 
-Builds the firmware's HTTP, TLS and PNG code for the host (`host/`) and runs
-it against:
+This compiles the firmware's HTTP, TLS and PNG code for the host (`host/`) and
+runs it against these.
 
-- local TLS 1.3 and HTTP servers, with a test PKI minted for each run:
-  protocol and framing, an impostor certificate, a chain forged from an
-  ordinary certificate, and the chain memo;
+- local TLS 1.3 and HTTP servers with a fresh test PKI each run. They try
+  the protocol, an impostor certificate, a chain forged from an ordinary
+  certificate and the chain memo;
 - Makespace's members-app as a live reference server, when `wifi.env` has
   `TEST_MAKESPACE_TOKEN` (`LIVE=0` skips it);
 - PNG fixtures, synthetic and server-rendered, checked byte for byte against
@@ -110,29 +112,28 @@ it against:
 - TLS: embedded-tls with one cipher suite (`TLS_AES_128_GCM_SHA256`) and
   ECDSA chains (P-256, P-384), verified against the five roots in
   `src/roots/` (see its README). Every certificate above the leaf must be a
-  CA, which embedded-tls doesn't check itself. The board has no clock, so
-  expiry and revocation aren't checked. The last verified chain is
+  CA, which embedded-tls doesn't check itself. The board has no clock. It
+  checks neither expiry nor revocation. The last verified chain is
   remembered, which cuts a repeat handshake from about 9s to under 1s.
-- Secrets: `wifi.env` is compiled into the firmware and the ESP32's flash is
-  readable over USB, so treat a flashed board as holding the WiFi password and
-  the token. The token goes in a header, never in the logged URL.
-- Build profile: the radio needs `opt-level` 2 or 3, and fat LTO with
-  `opt-level = "s"` broke the WiFi blob, so releases use `opt-level = 3` and
-  `lto = false`.
-- DRAM: statics, including the 48KB heap, fill DRAM from the bottom, and the
-  main stack gets what's left below 0x3FFE0000. Keep at least 12KB between
+- `wifi.env` is compiled into the firmware, and the ESP32's flash can be read
+  over USB, so a flashed board carries the WiFi password and the token. The
+  token goes in a header, never in the logged URL.
+- The radio needs `opt-level` 2 or 3. Fat LTO with `opt-level = "s"` broke
+  the WiFi blob, so releases use `opt-level = 3` and `lto = false`.
+- Statics, the 48KB heap among them, fill DRAM from the bottom. The main
+  stack gets what's left below 0x3FFE0000. Keep at least 12KB between
   `_stack_end` and that (measured on a build with `wifi.env`); with less,
   smoltcp overflows into the radio's globals.
-- Order: the panel's I2S setup read-modify-writes DPORT clock registers the
-  radio also writes, so the display starts before the radio.
-- Watchdog: 50s at most, as esp-hal counts 80MHz ticks in a u32, which wraps
-  past about 53s.
+- The display starts first. Its I2S setup read-modify-writes DPORT clock
+  registers that the radio also writes.
+- The watchdog is capped at 50s. esp-hal counts 80MHz ticks in a u32, which
+  wraps past about 53s.
 - VCOM is per panel, set at the factory in the TPS65186's EEPROM. The firmware
   reads and logs it, and never writes it.
-- PSRAM holds the frame buffers, but the panel's DMA can't reach it, so each
-  row is copied to internal SRAM.
-- The first-generation board scans bottom-up and has its own clear count,
-  pass sequence and grey waveform, chosen at compile time.
+- The frame buffers sit in PSRAM. The panel's DMA can't reach PSRAM, so each
+  row is copied to internal SRAM first.
+- The older panel scans from the bottom up. It has its own clear count, pass
+  sequence and grey waveform, picked at compile time.
 
 ## Licence
 
