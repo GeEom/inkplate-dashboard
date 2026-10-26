@@ -56,18 +56,18 @@ lto = false
 codegen-units = 1
 
 [lints.rust]
+# groups — priority -1, or clippy's lint_groups_priority fails an allow below
 rust_2024_compatibility = { level = "deny", priority = -1 }
 future_incompatible     = { level = "deny", priority = -1 }
 nonstandard_style       = { level = "deny", priority = -1 }
 rust_2018_idioms        = { level = "deny", priority = -1 }
-missing_docs            = "deny"
-unsafe_code             = "allow"    # MMIO, the PSRAM carve and RTC RAM: each block
-                                     # documented and single-op (clippy denies below);
-                                     # the shared modules #![forbid] it.
-unsafe_op_in_unsafe_fn  = "deny"
 unused                  = { level = "deny", priority = -1 }
+missing_docs            = "deny"
+unsafe_code             = "allow"    # MMIO, the PSRAM carve and RTC RAM; see the clippy denies
+unsafe_op_in_unsafe_fn  = "deny"
+
 [lints.clippy]
-# groups: priority -1 so the lines below can override
+# groups — priority -1 so specific lines can override
 correctness = { level = "deny", priority = -1 }
 suspicious  = { level = "deny", priority = -1 }
 complexity  = { level = "deny", priority = -1 }
@@ -103,6 +103,9 @@ exit                            = "deny"
 unreachable                     = "deny"
 let_underscore_must_use         = "deny"
 let_underscore_untyped          = "deny"
+print_stdout                    = "deny"
+print_stderr                    = "deny"
+unused_result_ok                = "deny"
 undocumented_unsafe_blocks      = "deny"
 multiple_unsafe_ops_per_block   = "deny"
 # the only permitted allows

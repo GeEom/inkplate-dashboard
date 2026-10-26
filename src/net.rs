@@ -161,16 +161,20 @@ impl Link<'_> {
         self.iface.routes_mut().remove_default_ipv4_route();
         self.iface.update_ip_addrs(|addrs| {
             addrs.clear();
-            if let Some((cidr, ..)) = lease {
-                addrs.push(IpCidr::Ipv4(cidr)).ok();
+            if let Some((cidr, ..)) = lease
+                && addrs.push(IpCidr::Ipv4(cidr)).is_err()
+            {
+                println!("net: no room for address {cidr}");
             }
         });
         self.ip = lease.as_ref().map(|(cidr, ..)| cidr.address());
         let Some((_, router, dns)) = lease else {
             return;
         };
-        if let Some(router) = router {
-            self.iface.routes_mut().add_default_ipv4_route(router).ok();
+        if let Some(router) = router
+            && let Err(full) = self.iface.routes_mut().add_default_ipv4_route(router)
+        {
+            println!("net: no default route via {router}: {full}");
         }
         let mut servers = FALLBACK_DNS;
         for (slot, server) in servers.iter_mut().zip(dns) {

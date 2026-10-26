@@ -266,7 +266,7 @@ impl<'a> Epd<'a> {
     }
 
     fn write(&mut self, device: u8, reg: u8, value: u8) {
-        self.i2c.write(device, &[reg, value]).ok();
+        self.i2c.write(device, &[reg, value]).unwrap_or(());
     }
 
     fn read(&mut self, device: u8, reg: u8) -> Option<u8> {

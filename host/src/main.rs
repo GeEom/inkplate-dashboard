@@ -10,12 +10,13 @@ mod png;
 #[path = "../../src/roots.rs"]
 mod roots;
 
-use core::fmt::Debug;
+use core::fmt::{self, Debug};
 use http::{
     ChainCache, Etag, FetchError, FetchOutcome, IntoFetchError, Request, Response, TlsBufs,
     TlsVerify,
 };
 use sha2::{Digest as _, Sha256};
+use std::io::{self, Write as _};
 use std::net::TcpStream;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -166,16 +167,31 @@ fn is(want: Outcome) -> impl FnOnce(&Outcome) -> bool {
     move |got| *got == want
 }
 
+/// Writes one line to stdout, returning false if it couldn't, as when the
+/// pipe is closed.
+fn say(line: fmt::Arguments<'_>) -> bool {
+    writeln!(io::stdout().lock(), "{line}").is_ok()
+}
+
 struct Report {
     failures: u32,
 }
 
 impl Report {
     fn check<T: Debug>(&mut self, name: &str, got: T, ok: impl FnOnce(&T) -> bool) {
-        if ok(&got) {
-            println!("PASS  {name}");
+        let passed = ok(&got);
+        let shown = if passed {
+            say(format_args!("PASS  {name}"))
         } else {
-            println!("FAIL  {name}: {got:?}");
+            say(format_args!("FAIL  {name}: {got:?}"))
+        };
+        if !passed || !shown {
+            self.failures += 1;
+        }
+    }
+
+    fn note(&mut self, line: fmt::Arguments<'_>) {
+        if !say(line) {
             self.failures += 1;
         }
     }
@@ -391,7 +407,9 @@ fn live_makespace(report: &mut Report, foreign: &[&[u8]]) {
         std::env::var("MS_PATH"),
         std::env::var("MS_TOKEN").ok().filter(|t| !t.is_empty()),
     ) else {
-        println!("SKIP  makespace scenarios (set MS_HOST/MS_PATH/MS_TOKEN)");
+        report.note(format_args!(
+            "SKIP  makespace scenarios (set MS_HOST/MS_PATH/MS_TOKEN)"
+        ));
         return;
     };
     let bearer = Some(token.as_str());
@@ -535,15 +553,12 @@ fn main() -> ExitCode {
     };
     match run {
         Err(e) => {
-            println!("ERROR {e}");
+            say(format_args!("ERROR {e}"));
             ExitCode::FAILURE
         }
-        Ok(()) if report.failures == 0 => {
-            println!("ALL PASS");
-            ExitCode::SUCCESS
-        }
+        Ok(()) if report.failures == 0 && say(format_args!("ALL PASS")) => ExitCode::SUCCESS,
         Ok(()) => {
-            println!("{} FAILURES", report.failures);
+            say(format_args!("{} FAILURES", report.failures));
             ExitCode::FAILURE
         }
     }

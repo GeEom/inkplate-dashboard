@@ -543,6 +543,9 @@ where
     let result = opened
         .map_err(IntoFetchError::into_fetch)
         .and_then(|()| exchange(&mut tls, request, response));
-    tls.close().ok();
+    // A failed close_notify doesn't spoil a response already read.
+    drop(match tls.close() {
+        Ok(socket) | Err((socket, _)) => socket,
+    });
     result
 }
