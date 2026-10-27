@@ -2,6 +2,7 @@
 
 #![no_std]
 #![no_main]
+#![expect(unsafe_code, reason = "MMIO, the PSRAM carve and RTC RAM")]
 
 extern crate alloc;
 
